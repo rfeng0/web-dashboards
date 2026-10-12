@@ -1,177 +1,35 @@
 # Setting up Cloudflare for the dashboards
 
-> **Who this is for:** the team member with access to the `sfuracerbot.ca` Cloudflare account, setting this up for the first time or adding a car.
+> **Who this is for:** the team member with access to the `sfuracerbot.ca` Cloudflare account, adding or removing a car or team member.
 > **Read first:** [../README.md](../README.md) (the diagram), and [security.md](security.md) for why each lock exists.
-> **You'll be able to:** put the dashboards live at https://dashboard.sfuracerbot.ca, open to a list of team emails and nobody else, and add a car with a config change.
-> **Time:** about an hour the first time; ten minutes per extra car.
+> **You'll be able to:** give team members access to the dashboard, and add a car with a config change.
+> **Time:** ten minutes per extra car.
 
 Most of this is clicking in the Cloudflare dashboard, because it sets up who is allowed in, and that should not live in a repo. Steps marked **👤 Dashboard** can only be done by a person there. A few checks are commands in a terminal.
-
-**Do the steps in order.** The Access applications come before anything is reachable, so nothing is ever briefly open to the internet.
-
-## Before you start
-
-- [ ] `sfuracerbot.ca` is an active zone in the Cloudflare account, with Cloudflare managing its DNS (a "full setup").
-- [ ] Zero Trust is enabled on the account (**Zero Trust** in the dashboard's left bar opens without asking you to sign up), with a login method — the built-in **One-time PIN** (a code by email) is enough.
-- [ ] The car is being set up following [car/README.md](../car/README.md). It sends you here three times: its step 6 for steps 1–3 below, its step 8 for step 4, and its step 9 for steps 5–7.
-
-**Hostnames stay one level deep** (`rb2-dash-origin.sfuracerbot.ca`, not `dash.rb2.sfuracerbot.ca`). Cloudflare's free Universal SSL certificate covers `sfuracerbot.ca` and `*.sfuracerbot.ca` only, so a deeper name would have no certificate.
-
-## 1. Create the Worker's service token — 👤 Dashboard
-
-This is the Worker's key to the car. Only it will hold one.
-
-1. Go to **Zero Trust** > **Access controls** > **Service credentials** > **Service Tokens**, and select **Create Service Token**.
-2. Name it `racerbot-dashboard-worker`. Pick a duration (a year, with a calendar reminder to renew, is a reasonable default).
-3. **Copy the Client ID and the Client Secret now.** The secret is shown once. New secrets start `cfast_`. Keep both somewhere private until step 6; do not paste them into chat, a commit or an issue.
-
-**Working when:** the token is listed with its expiry date.
-
-## 2. Lock the car's three origin hostnames to that token — 👤 Dashboard
-
-Do this **before** step 4 creates the hostnames, so they are never open.
-
-1. Go to **Zero Trust** > **Access controls** > **Applications**, **Create new application**, **Self-hosted and private**.
-2. Name it `rb2 origins`. Select **Add public hostname** three times and enter:
-   - `rb2-dash-origin` . `sfuracerbot.ca`
-   - `rb2-bridge-origin` . `sfuracerbot.ca`
-   - `rb2-cam-origin` . `sfuracerbot.ca`
-3. Under **Access policies**, create a policy named `worker only` with **Action: Service Auth**, and one **Include** rule: **Service Token** is `racerbot-dashboard-worker`. Add no other policy.
-4. Under **Additional settings**, turn on **401 Response for Service Auth policies**, so a missing token gets a plain 401 rather than a login page.
-5. Select **Create**.
-
-**Working when:** the application lists all three hostnames and exactly one policy, with action Service Auth.
-
-**Why the action matters:** with any action other than Service Auth, Access answers the Worker's requests with a login page, and the car is never reached.
-
-## 3. Put the site behind the team's email list — 👤 Dashboard
-
-1. **Zero Trust** > **Access controls** > **Applications** > **Create new application** > **Self-hosted and private**.
-2. Name it `Racerbot dashboards`. **Add public hostname**: `dashboard` . `sfuracerbot.ca`, with no path (it covers the whole site, including the WebSockets and `/api/cars`).
-3. Under **Access policies**, create a policy `team` with **Action: Allow** and one **Include** rule: **Emails**, listing each team member's address. Specific addresses, not a domain.
-4. **Session Duration:** `24 hours`. Long enough to cover a test day without logging in again; short enough that a lost laptop's session expires.
-5. Under **Additional settings** > **Cookie settings**, make sure **Binding Cookie** is **off**.
-6. Select **Create**.
-
-**Working when:** the application shows `dashboard.sfuracerbot.ca` and the `team` policy.
-
-**Adding or removing a person** later is editing that email list. Nothing in the repo changes.
-
-## 4. Publish the car's three services through its tunnel — 👤 Dashboard
-
-1. Go to **Networking** > **Tunnels**, select the car's tunnel, open the **Routes** tab.
-2. **Add route** > **Published application**, three times:
-
-   | Subdomain | Domain | Service |
-   |---|---|---|
-   | `rb2-dash-origin` | `sfuracerbot.ca` | `http://localhost:8080` (dashboard_node) |
-   | `rb2-bridge-origin` | `sfuracerbot.ca` | `http://localhost:8765` (foxglove_bridge) |
-   | `rb2-cam-origin` | `sfuracerbot.ca` | `http://localhost:9090` (usb_cam_stream) |
-
-Cloudflare creates the DNS records itself.
-
-**Working when** (**⌨ Terminal**, any machine):
-
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" https://rb2-dash-origin.sfuracerbot.ca/
-```
-
-prints `401`. That is Access refusing a request with no token — correct. A `200` means step 2 is missing a hostname: fix that first.
-
-## 5. Connect this repo to Cloudflare, so every merge deploys — 👤 Dashboard
-
-Cloudflare builds and deploys the site itself, straight from GitHub (this is called **Workers Builds**). Nothing is deployed from GitHub Actions, and **GitHub needs no secrets**.
-
-1. Go to **Workers & Pages**, select **Create application**, then **Get started** next to **Import a repository**.
-2. Connect GitHub if asked, and choose `sfu-racerbot/web-dashboards`.
-3. Configure the project:
-
-   | Setting | Value | Why |
-   |---|---|---|
-   | Project (Worker) name | `web-dashboards` | Must match `name` in `wrangler.jsonc`, or the build fails |
-   | Build command | `npm run build` | Builds Lichtblick from source and assembles `dist/` (about 5 minutes) |
-   | Deploy command | `npx wrangler deploy` | The default |
-   | Root directory | `/` | The default |
-   | Production branch | `main` | |
-
-4. Select **Save and Deploy**.
-5. In the new Worker, go to **Settings** > **Build** > **Branch control** and **untick Enable Preview Builds**. The site has no preview URLs (they would skip Access), so preview builds could only fail.
-
-**Working when:** the build log ends with the deploy listing `dashboard.sfuracerbot.ca (custom domain)`. The landing page opens, but the dashboards cannot reach the car yet, and their sockets answer `secret ACCESS_CLIENT_ID is not set` — expected until step 6.
-
-**If it doesn't:**
-- "The name in your Wrangler configuration file … must match": the project name in step 3 was different. Rename the Worker, or change `name` in `wrangler.jsonc` to match.
-- The deploy fails on the custom domain (permissions, or "a DNS record already exists"): delete any old `dashboard` record in **DNS** > **Records**, or add the domain by hand in the Worker's **Settings** > **Domains & Routes** > **Add** > **Custom domain**, then **Retry build**.
-- The build runs out of time or memory: Cloudflare's free build machine has 2 CPUs, 8 GB and 20 minutes; the build needs about a third of that. Retry once; if it recurs, see `apps/advanced/README.md`.
-
-Every push to `main` from then on deploys by itself. The GitHub Actions workflow still runs the tests and a Lichtblick build on every pull request, as a check, with no secrets.
-
-## 6. Give the Worker the service token — 👤 Dashboard
-
-The site needs the service token from step 1 while it runs, to open the car's hostnames. You add it once, as two **runtime secrets**. They stay through every later deploy, and never go in the repo or GitHub.
-
-1. In **Workers & Pages**, open **`web-dashboards`** and go to its **Settings** tab.
-2. Find the section headed **Runtime variables and secrets**. Make sure **Production** is selected next to the heading, not **Previews Base**.
-3. Select **Add variable**, then fill in:
-
-   | Type | Name | Value |
-   |---|---|---|
-   | **Secret** | `ACCESS_CLIENT_ID` | the Client ID from step 1 |
-   | **Secret** | `ACCESS_CLIENT_SECRET` | the Client Secret from step 1 |
-
-   Type must be **Secret**, not Variable. Names must be exactly as shown, in capitals.
-4. Select **Deploy** to save.
-
-**Working when:** the **Runtime variables and secrets** table lists both names with Type `Secret` and `Value encrypted`. The same table also lists `BRIDGE_TRACKING`, `CARS`, `PUBLIC_ORIGIN` and `UPSTREAM_IDLE_SEC`. Those come from `wrangler.jsonc` on every deploy, so change them in the repo, not here.
-
-**Wrong place, same name.** Further down the Settings page, the **Builds** section has its own **Variables and secrets** box, between **API token** and **Deploy Hooks**. Secrets put there exist only while the site is being built; the running site never sees them. If `/rb2/check` reports a secret missing although you can see it in the dashboard, check it is in **Runtime variables and secrets**, not in **Builds**.
-
-(From a terminal instead: `npx wrangler secret put ACCESS_CLIENT_ID`, then `npx wrangler secret put ACCESS_CLIENT_SECRET`. Same result.)
-
-## 7. Check it end to end
-
-With the car on and its tunnel, `dashboard_node`, `foxglove_bridge` and camera running:
-
-1. Open https://dashboard.sfuracerbot.ca in a private window. **Working when:** Access asks for your email, then the landing page lists **Car 1** and **Car 2**.
-2. Open **Simple**. **Working when:** the link row under `CONNECTED` reads `CAR ONLINE · 1 WATCHING`, the map and scan draw, and the camera inset shows video.
-3. Open **Advanced** in Chrome or Edge. **Working when:** Lichtblick opens already connected to `wss://dashboard.sfuracerbot.ca/rb2/bridge` and the topic list fills in.
-4. In the Cloudflare dashboard, **Workers & Pages** > `web-dashboards` > **Observability** (logs). **Working when:** you see `upstream_connect` for `rb2` and a `bridge_connect` with your email.
-
-**If anything fails, open https://dashboard.sfuracerbot.ca/rb2/check first.** It tests every hop from the site to the car and names the step to fix.
-
-**If Simple says `CAR OFFLINE`:** the relay could not reach the car. The row's tooltip, and the `upstream_failed` log line, say why: a secret not set (step 6), an origin answering 401/403 (step 2 or 4), or the car's dashboard_node not running.
-
-## If your zone has a WAF challenge rule — 👤 Dashboard
-
-**A zone-wide bot or WAF challenge stops the site from reaching the car.** The site reaches the car through the car's `-origin` hostnames, which are in the same zone, so Cloudflare runs those requests through the zone's security rules like any visitor's. A browser can solve a challenge; the site cannot. It gets a challenge page back, and the car shows as offline.
-
-`/rb2/check` names this directly: "A Cloudflare WAF / bot challenge answered instead of the car".
-
-**The fix:** let requests to the car's `-origin` hostnames skip the rule. Everything else stays challenged.
-
-1. Go to **Security rules** for `sfuracerbot.ca`, and edit the rule that challenges.
-2. Select **Edit expression**, and add this to the end of the expression:
-
-   ```txt
-   and not http.host contains "-origin.sfuracerbot.ca"
-   ```
-
-   Keep the brackets around the existing expression if it has more than one condition, for example `(… existing …) and not http.host contains "-origin.sfuracerbot.ca"`.
-3. Select **Deploy**.
-
-**Working when:** every line in `/rb2/check` says ok, **including `relay websocket (from the Durable Object)`**, and Simple reads `CAR ONLINE`.
-
-**Why not `cf.worker.upstream_zone`?** That field marks requests made by a Worker on your zone, and it does let the Worker's own routes (Advanced, camera) through. But the relay that feeds Simple runs in a Durable Object, whose requests are not tagged with a zone. With only that exception, Advanced and the camera work while Simple stays offline. Skipping by hostname covers both, and every new car too, as long as its hostnames follow the `<car>-…-origin` pattern.
-
-**Why this is safe.** The `-origin` hostnames are not open because the challenge skips them: each is locked by its own Access application to the site's service token (step 2), so anyone else gets a 401 or a login page.
 
 ## Adding a car
 
 For a car `rb3`:
 
-1. **👤 Dashboard** — step 2 again with `rb3-dash-origin`, `rb3-bridge-origin`, `rb3-cam-origin` (a new `rb3 origins` application, same `worker only` policy).
-2. **👤 Dashboard** — step 4 again on **that car's** tunnel, with the `rb3-…` names.
-3. **In the repo** — add one entry to `CARS` in [`wrangler.jsonc`](../wrangler.jsonc) and open a pull request:
+1. Go to **Zero Trust** > **Access controls** > **Applications**, **Create new application**, **Self-hosted and private**.
+2. Name it `rb3 origins`. Select **Add public hostname** three times and enter:
+   - `rb3-dash-origin` . `sfuracerbot.ca`
+   - `rb3-bridge-origin` . `sfuracerbot.ca`
+   - `rb3-cam-origin` . `sfuracerbot.ca`
+3. Under **Access policies**, create a policy named `worker only` with **Action: Service Auth**, and one **Include** rule: **Service Token** is `racerbot-dashboard-worker`. Add no other policy.
+4. Under **Additional settings**, turn on **401 Response for Service Auth policies**, so a missing token gets a plain 401 rather than a login page.
+5. Select **Create**.
+
+6. Go to **Networking** > **Tunnels**, select the car's tunnel, open the **Routes** tab.
+7. **Add route** > **Published application**, three times:
+
+   | Subdomain | Domain | Service |
+   |---|---|---|
+   | `rb3-dash-origin` | `sfuracerbot.ca` | `http://localhost:8080` (dashboard_node) |
+   | `rb3-bridge-origin` | `sfuracerbot.ca` | `http://localhost:8765` (foxglove_bridge) |
+   | `rb3-cam-origin` | `sfuracerbot.ca` | `http://localhost:9090` (usb_cam_stream) |
+
+8. **In the repo** — add one entry to `CARS` in [`wrangler.jsonc`](../wrangler.jsonc) and open a pull request:
 
    ```jsonc
    "rb3": {
@@ -184,10 +42,15 @@ For a car `rb3`:
 
 Merging deploys it. **Working when:** the landing page lists the new car. The same service token and the same email list cover it; no code changes.
 
+## Adding a person
+
+Add their email to the `team` policy in **Access Policies**
+
+
 ## Removing access
 
 | To remove | Do |
 |---|---|
-| A person | Remove their email from the `team` policy (step 3). |
-| The Worker's access to the cars | Revoke the service token (step 1's page). Every car origin then refuses the Worker. |
+| A person | Remove their email from the `team` policy in **Access Policies**. |
+| The Worker's access to the cars | Revoke the service token **Zero Trust** > **Access controls** > **Service credentials** > **Service Tokens**. Every car origin then refuses the Worker. |
 | A car | Delete its `CARS` entry and merge; then delete its tunnel routes and origin application. |
